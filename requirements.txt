@@ -1,1 +1,7 @@
-pyrogram==2.0.106
+https://codeload.github.com/gautamajay52/pyrogram/zip/refs/heads/dev
+TgCrypto
+pyromod
+pymongo
+dnspython
+aiohttp
+requests
