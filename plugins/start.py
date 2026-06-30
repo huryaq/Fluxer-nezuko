@@ -1,16 +1,40 @@
 import os
 import asyncio
 from pyrogram import Client, filters, __version__
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatMemberStatus
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated
+from pyrogram.errors.exceptions.bad_request_400 import UserNotParticipant
 
 from bot import Bot
-from config import ADMINS, FORCE_MSG, OWNER_ID, START_MSG, CUSTOM_CAPTION, DISABLE_CHANNEL_BUTTON, PROTECT_CONTENT, START_PIC, FORCE_PIC, SHORT_MSG, AUTO_DEL, DEL_TIMER, DEL_MSG
-from helper_func import subscribed, encode, decode, get_messages
-from database.database import add_user, del_user, full_userbase, present_user, is_premium
+import secrets
+import base64
+from config import ADMINS, FORCE_MSG, OWNER_ID, START_MSG, CUSTOM_CAPTION, DISABLE_CHANNEL_BUTTON, PROTECT_CONTENT, START_PIC, FORCE_PIC, SHORT_MSG, AUTO_DEL, DEL_TIMER, DEL_MSG, VERCEL_PROXY_URL
+from helper_func import encode, decode, get_messages
+from database.database import add_user, del_user, full_userbase, present_user, is_premium, get_fsubs
 from plugins.shorturl import get_short
 from plugins.autodel import convert_time
+
+async def check_fsub(client: Client, user_id: int):
+    if user_id in ADMINS or user_id == OWNER_ID:
+        return []
+
+    fsubs = await get_fsubs()
+    not_joined = []
+
+    for fsub in fsubs:
+        chat_id = fsub['chat_id']
+        try:
+            member = await client.get_chat_member(chat_id, user_id)
+            if member.status not in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER]:
+                not_joined.append(fsub)
+        except UserNotParticipant:
+            not_joined.append(fsub)
+        except Exception as e:
+            print(f"Error checking FSub for chat {chat_id}: {e}")
+            not_joined.append(fsub) # Fail closed: if we can't check, assume not joined to enforce FSub
+
+    return not_joined
 
 async def delete_message(msg, delay_time):
     if AUTO_DEL.lower() == "true": 
@@ -23,7 +47,11 @@ async def auto_del_notification(client, msg, delay_time):
         await asyncio.sleep(delay_time)
         await msg.delete()
 
-@Bot.on_message(filters.command('start') & filters.private & subscribed)
+import asyncio
+
+user_timeouts = {}
+
+@Bot.on_message(filters.command('start') & filters.private)
 async def start_command(client: Client, message: Message):
     user_id = message.from_user.id
     try:
@@ -32,13 +60,57 @@ async def start_command(client: Client, message: Message):
     except Exception as e:
         print(f"Error adding user: {e}")
 
+    not_joined = await check_fsub(client, user_id)
+    if not_joined:
+        buttons = []
+        for fsub in not_joined:
+            try:
+                chat = await client.get_chat(fsub['chat_id'])
+                invite_link = chat.invite_link
+                if not invite_link:
+                    invite_link = await client.export_chat_invite_link(fsub['chat_id'])
+                buttons.append([InlineKeyboardButton(text=fsub['title'], url=invite_link)])
+            except Exception as e:
+                print(f"Error getting invite link for {fsub['chat_id']}: {e}")
+                # Fallback to general channel link format if invite link extraction fails
+                buttons.append([InlineKeyboardButton(text=fsub['title'], url=f"https://t.me/c/{str(fsub['chat_id'])[4:]}/1")])
+
+        try:
+            start_payload = message.command[1] if len(message.command) > 1 else "tryagain"
+            try_again_url = f"https://t.me/{client.me.username if client.me else client.username}?start={start_payload}"
+            buttons.append([InlineKeyboardButton(text="🔄 ᴛʀʏ ᴀɢᴀɪɴ", url=try_again_url)])
+        except IndexError:
+            pass
+
+        await message.reply_photo(
+            photo=FORCE_PIC,
+            caption=FORCE_MSG.format(
+                first=message.from_user.first_name,
+                last=message.from_user.last_name,
+                username=None if not message.from_user.username else '@' + message.from_user.username,
+                mention=message.from_user.mention,
+                id=message.from_user.id
+            ),
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
     text = message.text
+
+    if text == "/start tryagain":
+        text = "/start"
 
     if len(text) > 7:
         try:
             basic = text.split(" ", 1)[1]
             if basic.startswith("yu3elk"):
                 base64_string = basic[6:-1]
+
+                # If 30 seconds haven't passed since the last short_url call
+                if user_id in user_timeouts and (asyncio.get_event_loop().time() - user_timeouts[user_id]) < 130:
+                    await message.reply("<b><blockquote>🚨 ʙʏᴘᴀss ᴅᴇᴛᴇᴄᴛᴇᴅ 🚨</blockquote>\n\n<blockquote>ᴀʀᴇ ᴍᴇʀᴇ ʙᴇᴛᴇ ᴋɪᴛɴɪ ʙᴀᴀʀ ʙᴏʟᴀ ʜ ʙᴀᴀᴘ ꜱᴇ ᴄʜᴀʟᴀᴋɪ ɴʜɪ ? 🥸🖕\n\nᴄʜʟ ʙᴇᴛᴇ ᴀʙ ᴡᴀᴘᴀꜱ ꜱᴇ ꜱᴏʟᴠᴇ ᴋʀɴᴇ ʟɢᴊᴀ ᴍᴇʀᴀ ᴘʏᴀʀᴀ ʙᴇᴛᴀ ᴏʀ ɪꜱꜱ ʙᴀᴀʀ ᴄʜᴀʟᴀᴋɪ ɴʜɪ !! 🌚💭</blockquote></b>")
+                    return
+
             else:
                 base64_string = text.split(" ", 1)[1]
 
@@ -49,6 +121,7 @@ async def start_command(client: Client, message: Message):
         is_user_premium = await is_premium(user_id)
         if not is_user_premium and user_id != OWNER_ID and not basic.startswith("yu3elk"):
             await short_url(client, message, base64_string)
+            user_timeouts[user_id] = asyncio.get_event_loop().time()  # Start the 30s countdown
             return
 
         string = await decode(base64_string)
@@ -76,6 +149,7 @@ async def start_command(client: Client, message: Message):
             except Exception as e:
                 print(f"Error processing argument: {e}")
                 return
+
         temp_msg = await message.reply("Please wait...")
         try:
             messages = await get_messages(client, ids)
@@ -137,12 +211,10 @@ async def start_command(client: Client, message: Message):
                     id=message.from_user.id
                 ),
                 reply_markup=reply_markup,
-
             )
         except Exception as e:
             print(f"Error replying to message: {e}")
         return
-
 
 #=====================================================================================##
 
@@ -152,12 +224,19 @@ REPLY_ERROR = "<code>Use this command as a reply to any telegram message without
 #=====================================================================================##
 async def short_url(client: Client, message: Message, base64_string):
     try:
-        prem_link = f"https://t.me/{client.username}?start=yu3elk{base64_string}7"
-        short_link = get_short(prem_link)
+        bot_username = client.me.username if client.me else client.username
+        payload = f"yu3elk{base64_string}O"
+        token = secrets.token_hex(6)
+        finalize_url = f"{VERCEL_PROXY_URL}/finalize?token={token}&bot={bot_username}&payload={payload}"
+
+        short_url = get_short(finalize_url)
+
+        b64_url = base64.urlsafe_b64encode(short_url.encode()).decode()
+        final_url = f"{VERCEL_PROXY_URL}/access/{token}?url={b64_url}"
 
         buttons = [
             [
-                InlineKeyboardButton(text="Download", url=short_link),
+                InlineKeyboardButton(text="Download", url=final_url),
                 InlineKeyboardButton(text="Tutorial", url="https://t.me/+KPJ5glEICD40Njc1")
             ],
             [
@@ -176,38 +255,6 @@ async def short_url(client: Client, message: Message, base64_string):
     except IndexError:
         pass
 
-
-@Bot.on_message(filters.command('start') & filters.private)
-async def not_joined(client: Client, message: Message):
-    buttons = [
-        [
-            InlineKeyboardButton(text="ᴄʜᴀɴɴᴇʟ 1", url=client.invitelink1),
-            InlineKeyboardButton(text="ᴄʜᴀɴɴᴇʟ 2", url=client.invitelink2)
-        ]
-    ]
-    try:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text="ᴛʀʏ ᴀɢᴀɪɴ",
-                    url=f"https://t.me/{client.username}?start={message.command[1]}"
-                )
-            ]
-        )
-    except IndexError:
-        pass
-
-    await message.reply_photo(
-        photo=FORCE_PIC,
-        caption=FORCE_MSG.format(
-            first=message.from_user.first_name,
-            last=message.from_user.last_name,
-            username=None if not message.from_user.username else '@' + message.from_user.username,
-            mention=message.from_user.mention,
-            id=message.from_user.id
-        ),
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
 
 @Bot.on_message(filters.command('request') & filters.private)
 async def request_command(client: Client, message: Message):
@@ -240,7 +287,7 @@ async def my_plan(client: Client, message: Message):
     if is_user_premium:
         await message.reply_text("Ads : Disable\nPremium : Unlocked\n\nNice Dude you're a premium user..!")
     else:
-        await message.reply_text("Ads : Enable\nPremium : Locked\nUnlock Premium to get more benefits\nContact - @DoraShin_hlo..!")
+        await message.reply_text("Ads : Enable\nPremium : Locked\nUnlock Premium to get more benefits\nContact - @Karasu_07..!")
 
 @Bot.on_message(filters.command('users') & filters.private & filters.user(OWNER_ID))
 async def get_users(client: Bot, message: Message):
@@ -259,7 +306,7 @@ async def send_text(client: Bot, message: Message):
         deleted = 0
         unsuccessful = 0
         
-        pls_wait = await message.reply("<i>Broadcast Processing Please Wait Bro... </i>")
+        pls_wait = await message.reply("<i>Broadcast Processing Till Wait Dude... </i>")
         for chat_id in query:
             try:
                 await broadcast_msg.copy(chat_id)
